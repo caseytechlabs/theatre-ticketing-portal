@@ -1,72 +1,70 @@
 import React, { useCallback, useEffect, useState } from 'react'
 import { bookingApi } from '../../api/bookings'
+import { CountdownTimer } from '../../components/common/CountdownTimer'
 import { Modal } from '../../components/common/Modal'
 import { StatusBadge } from '../../components/common/StatusBadge'
 import { LoadingSpinner } from '../../components/common/LoadingSpinner'
 import { Booking, BookingStatus } from '../../types'
 
-const KEY = 'theater_client_bookings'
-const storedIds = (): string[] => {
-  try { return JSON.parse(localStorage.getItem(KEY) ?? '[]') } catch { return [] }
+type Sort = { col: string; dir: 'asc' | 'desc' }
+
+function bookingDeadline(b: { pendingExpiresAt?: string; voucherExpiresAt?: string }): number {
+  const pending = b.pendingExpiresAt ? new Date(b.pendingExpiresAt).getTime() : Infinity
+  const voucher = b.voucherExpiresAt ? new Date(b.voucherExpiresAt).getTime() : Infinity
+  return Math.min(pending, voucher)
 }
 
 function fmt(d: string) {
-  return new Date(d).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })
+  return new Date(d).toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' })
 }
 
-const statusInfo: Record<BookingStatus, { icon: string; text: string; color: string }> = {
-  [BookingStatus.PENDING]: {
-    icon: '⏳', color: 'bg-amber-50 border-amber-200 text-amber-800',
-    text: 'Your seat is reserved. Complete payment to confirm.',
-  },
-  [BookingStatus.CONFIRMED]: {
-    icon: '🎉', color: 'bg-green-50 border-green-200 text-green-800',
-    text: 'Payment confirmed! Your ticket is booked. Enjoy the show!',
-  },
-  [BookingStatus.CANCELLED]: {
-    icon: '❌', color: 'bg-red-50 border-red-200 text-red-800',
-    text: 'Booking cancelled. The voucher was released back.',
-  },
+function getValue(col: string, b: Booking): string | number {
+  if (col === 'createdAt' || col === 'updatedAt') return new Date(b[col]).getTime()
+  return (b as any)[col] ?? ''
 }
 
 export function ClientBookingPage() {
-  const [bookings, setBookings] = useState<Booking[]>([])
-  const [loading, setLoading] = useState(false)
-  const [lookupId, setLookupId] = useState('')
-  const [lookupError, setLookupError] = useState('')
-  const [payTarget, setPayTarget] = useState<Booking | null>(null)
+  const [bookings, setBookings]     = useState<Booking[]>([])
+  const [loading, setLoading]       = useState(false)
+  const [sort, setSort]             = useState<Sort>({ col: 'createdAt', dir: 'desc' })
+  const [expiredIds, setExpiredIds] = useState<Set<string>>(new Set())
+  const [payTarget, setPayTarget]   = useState<Booking | null>(null)
   const [payLoading, setPayLoading] = useState(false)
-  const [toast, setToast] = useState({ msg: '', ok: true })
+  const [toast, setToast]           = useState({ msg: '', ok: true })
 
   const notify = (msg: string, ok = true) => {
     setToast({ msg, ok })
     setTimeout(() => setToast({ msg: '', ok: true }), 4000)
   }
 
-  const loadAll = useCallback(async (ids: string[]) => {
-    if (!ids.length) return
+  const load = useCallback(async () => {
     setLoading(true)
-    const results = await Promise.allSettled(ids.map((id) => bookingApi.getById(id)))
-    setBookings(results
-      .filter((r): r is PromiseFulfilledResult<any> => r.status === 'fulfilled')
-      .map((r) => r.value.data as Booking))
-    setLoading(false)
+    try {
+      const result = await bookingApi.getMy()
+      const all = (result.data ?? []) as Booking[]
+      setBookings(all)
+    } catch (e: any) { notify(e.message, false) }
+    finally { setLoading(false) }
   }, [])
 
-  useEffect(() => { loadAll(storedIds()) }, [loadAll])
+  useEffect(() => { load() }, [load])
 
-  const handleLookup = async (e: React.FormEvent) => {
-    e.preventDefault()
-    setLookupError('')
-    try {
-      const result = await bookingApi.getById(lookupId.trim())
-      const b = result.data as Booking
-      setBookings((prev) => prev.some((x) => x.id === b.id) ? prev.map((x) => x.id === b.id ? b : x) : [b, ...prev])
-      const ids = Array.from(new Set([b.id, ...storedIds()]))
-      localStorage.setItem(KEY, JSON.stringify(ids))
-      setLookupId('')
-    } catch (e: any) { setLookupError(e.message) }
-  }
+  const handleExpire = useCallback((id: string) => {
+    setExpiredIds((prev) => new Set([...prev, id]))
+    load()
+  }, [load])
+
+  const onSort = (col: string) =>
+    setSort(prev => prev.col === col ? { col, dir: prev.dir === 'asc' ? 'desc' : 'asc' } : { col, dir: 'asc' })
+
+  const Th = ({ label, col }: { label: string; col: string }) => (
+    <th className="px-4 py-3 font-semibold cursor-pointer select-none hover:bg-gray-100 whitespace-nowrap"
+      onClick={() => onSort(col)}>
+      {label} <span className={sort.col === col ? 'text-gray-700' : 'text-gray-300'}>
+        {sort.col === col ? (sort.dir === 'asc' ? '↑' : '↓') : '↕'}
+      </span>
+    </th>
+  )
 
   const handlePay = async (success: boolean) => {
     if (!payTarget) return
@@ -81,26 +79,27 @@ export function ClientBookingPage() {
     finally { setPayLoading(false) }
   }
 
-  const pending  = bookings.filter((b) => b.status === BookingStatus.PENDING)
-  const settled  = bookings.filter((b) => b.status !== BookingStatus.PENDING)
+  const isLocallyExpired = (b: Booking) => expiredIds.has(b.id) || Date.now() >= bookingDeadline(b)
+
+  const sorted = [...bookings].sort((a, b) => {
+    const av = getValue(sort.col, a); const bv = getValue(sort.col, b)
+    return (av < bv ? -1 : av > bv ? 1 : 0) * (sort.dir === 'asc' ? 1 : -1)
+  })
+
+  const pending = sorted.filter((b) => b.status === BookingStatus.PENDING && !isLocallyExpired(b))
+  const settled = sorted.filter((b) => b.status !== BookingStatus.PENDING || isLocallyExpired(b))
 
   return (
-    <div className="max-w-2xl mx-auto">
-      <div className="mb-6">
-        <h1 className="text-2xl font-bold text-gray-900">My Booking</h1>
-        <p className="text-gray-500 mt-1">Track and complete your reservations</p>
-      </div>
-
-      <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-5 mb-6">
-        <form onSubmit={handleLookup} className="flex gap-3">
-          <input type="text" value={lookupId} onChange={(e) => setLookupId(e.target.value)}
-            placeholder="Enter booking ID to track…"
-            className="flex-1 border border-gray-300 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent" />
-          <button type="submit" className="bg-indigo-600 text-white px-4 py-2.5 rounded-xl text-sm font-semibold hover:bg-indigo-700 transition-colors">
-            Track
-          </button>
-        </form>
-        {lookupError && <p className="text-sm text-red-600 mt-2">{lookupError}</p>}
+    <div>
+      <div className="mb-6 flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold text-gray-900">My Booking</h1>
+          <p className="text-gray-500 mt-1">Track and complete your reservations</p>
+        </div>
+        <button onClick={load} disabled={loading}
+          className="text-sm text-indigo-600 border border-indigo-200 px-3 py-1.5 rounded-lg hover:bg-indigo-50 disabled:opacity-50 transition-colors">
+          Refresh
+        </button>
       </div>
 
       {toast.msg && (
@@ -110,7 +109,7 @@ export function ClientBookingPage() {
       )}
 
       {loading ? <LoadingSpinner /> : bookings.length === 0 ? (
-        <div className="text-center py-16 text-gray-400">
+        <div className="text-center py-16 bg-white rounded-2xl border border-gray-100 text-gray-400">
           <p className="text-5xl mb-3">📋</p>
           <p className="font-medium">No bookings yet</p>
           <p className="text-sm mt-1">Book a voucher from the "My Vouchers" tab.</p>
@@ -119,66 +118,106 @@ export function ClientBookingPage() {
         <div className="space-y-6">
           {pending.length > 0 && (
             <div>
-              <h2 className="text-xs font-bold text-amber-700 uppercase tracking-widest mb-3">Awaiting Payment</h2>
-              <div className="space-y-4">
-                {pending.map((b) => (
-                  <div key={b.id} className="bg-white rounded-2xl border border-gray-100 shadow-sm p-5 space-y-3">
-                    <div className="flex justify-between items-start">
-                      <StatusBadge status={b.status} />
-                      <span className="text-xs text-gray-400 font-mono">{b.id}</span>
-                    </div>
-                    <div className={`flex gap-2 items-start p-3 rounded-xl border text-sm ${statusInfo[b.status].color}`}>
-                      <span>{statusInfo[b.status].icon}</span>
-                      <p>{statusInfo[b.status].text}</p>
-                    </div>
-                    <button onClick={() => setPayTarget(b)}
-                      className="w-full bg-indigo-600 text-white py-2.5 rounded-xl text-sm font-semibold hover:bg-indigo-700 transition-colors">
-                      Simulate Payment
-                    </button>
-                  </div>
-                ))}
+              <h2 className="text-xs font-bold text-amber-700 uppercase tracking-widest mb-3">Awaiting Payment ({pending.length})</h2>
+              <div className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-x-auto">
+                <table className="w-full text-left min-w-[600px]">
+                  <thead>
+                    <tr className="bg-gray-50 border-b border-gray-100 text-xs text-gray-500 uppercase tracking-wide">
+                      <Th label="Booking ID" col="id" />
+                      <Th label="Voucher ID" col="voucherId" />
+                      <th className="px-4 py-3 font-semibold">Type</th>
+                      <Th label="Booked" col="createdAt" />
+                      <th className="px-4 py-3 font-semibold whitespace-nowrap">Time Remaining</th>
+                      <th className="px-4 py-3 font-semibold">Action</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-50">
+                    {pending.map((b) => (
+                      <tr key={b.id} className="hover:bg-amber-50">
+                        <td className="px-4 py-3 text-xs font-mono text-gray-500 break-all">{b.id}</td>
+                        <td className="px-4 py-3 text-xs font-mono text-gray-500 break-all">{b.voucherId}</td>
+                        <td className="px-4 py-3">
+                          <span className={`text-xs font-semibold px-2 py-0.5 rounded-full border ${b.voucherType === 'Universal' ? 'bg-indigo-50 text-indigo-600 border-indigo-200' : b.voucherType === 'Assigned' ? 'bg-purple-50 text-purple-600 border-purple-200' : 'bg-gray-50 text-gray-400 border-gray-200'}`}>
+                            {b.voucherType ?? '—'}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3 text-sm text-gray-500 whitespace-nowrap">{fmt(b.createdAt)}</td>
+                        <td className="px-4 py-3">
+                          <CountdownTimer deadline={bookingDeadline(b)} onExpire={() => handleExpire(b.id)} />
+                        </td>
+                        <td className="px-4 py-3">
+                          {(() => {
+                            const expired = expiredIds.has(b.id) || Date.now() >= bookingDeadline(b)
+                            return (
+                              <button onClick={() => setPayTarget(b)} disabled={expired}
+                                className="text-xs bg-indigo-600 text-white px-3 py-1.5 rounded-lg hover:bg-indigo-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors whitespace-nowrap">
+                                Simulate Payment
+                              </button>
+                            )
+                          })()}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
               </div>
             </div>
           )}
 
           {settled.length > 0 && (
             <div>
-              <h2 className="text-xs font-bold text-gray-400 uppercase tracking-widest mb-3">History</h2>
-              <div className="space-y-3">
-                {settled.map((b) => (
-                  <div key={b.id} className="bg-white rounded-2xl border border-gray-100 shadow-sm p-5 space-y-3">
-                    <div className="flex justify-between items-start">
-                      <StatusBadge status={b.status} />
-                      <span className="text-xs text-gray-400 font-mono">{b.id}</span>
-                    </div>
-                    <div className={`flex gap-2 items-start p-3 rounded-xl border text-sm ${statusInfo[b.status].color}`}>
-                      <span>{statusInfo[b.status].icon}</span>
-                      <p>{statusInfo[b.status].text}</p>
-                    </div>
-                    <p className="text-xs text-gray-400">Updated {fmt(b.updatedAt)}</p>
-                  </div>
-                ))}
+              <h2 className="text-xs font-bold text-gray-400 uppercase tracking-widest mb-3">History ({settled.length})</h2>
+              <div className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-x-auto">
+                <table className="w-full text-left min-w-[600px]">
+                  <thead>
+                    <tr className="bg-gray-50 border-b border-gray-100 text-xs text-gray-500 uppercase tracking-wide">
+                      <Th label="Booking ID" col="id" />
+                      <Th label="Voucher ID" col="voucherId" />
+                      <th className="px-4 py-3 font-semibold">Type</th>
+                      <Th label="Status" col="status" />
+                      <Th label="Booked" col="createdAt" />
+                      <Th label="Updated" col="updatedAt" />
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-50">
+                    {settled.map((b) => (
+                      <tr key={b.id} className="hover:bg-gray-50">
+                        <td className="px-4 py-3 text-xs font-mono text-gray-500 break-all">{b.id}</td>
+                        <td className="px-4 py-3 text-xs font-mono text-gray-500 break-all">{b.voucherId}</td>
+                        <td className="px-4 py-3">
+                          <span className={`text-xs font-semibold px-2 py-0.5 rounded-full border ${b.voucherType === 'Universal' ? 'bg-indigo-50 text-indigo-600 border-indigo-200' : b.voucherType === 'Assigned' ? 'bg-purple-50 text-purple-600 border-purple-200' : 'bg-gray-50 text-gray-400 border-gray-200'}`}>
+                            {b.voucherType ?? '—'}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3"><StatusBadge status={isLocallyExpired(b) && b.status === BookingStatus.PENDING ? BookingStatus.CANCELLED : b.status} /></td>
+                        <td className="px-4 py-3 text-sm text-gray-500 whitespace-nowrap">{fmt(b.createdAt)}</td>
+                        <td className="px-4 py-3 text-sm text-gray-500 whitespace-nowrap">{fmt(b.updatedAt)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
               </div>
             </div>
           )}
         </div>
       )}
 
-      <Modal isOpen={!!payTarget} onClose={() => setPayTarget(null)} title="Complete Payment">
+      <Modal isOpen={!!payTarget} onClose={() => setPayTarget(null)} title="Simulate Payment">
         <div className="space-y-4">
-          <p className="text-sm text-gray-600">Simulate the payment gateway result.</p>
+          <p className="text-sm text-gray-600">Simulate the payment service confirming this transaction.</p>
           <div className="p-4 bg-indigo-50 border border-indigo-100 rounded-xl text-sm text-indigo-700 space-y-1">
             <p className="font-mono text-xs break-all">{payTarget?.id}</p>
             <p>Voucher: <span className="font-mono text-xs">{payTarget?.voucherId}</span></p>
+            <p>Booked: <span>{payTarget ? fmt(payTarget.createdAt) : ''}</span></p>
           </div>
           <div className="flex gap-3">
             <button onClick={() => handlePay(false)} disabled={payLoading}
               className="flex-1 py-2.5 bg-white text-red-600 border border-red-200 rounded-xl text-sm font-semibold hover:bg-red-50 disabled:opacity-50 transition-colors">
-              Cancel / Fail
+              Payment Failed
             </button>
             <button onClick={() => handlePay(true)} disabled={payLoading}
               className="flex-1 py-2.5 bg-indigo-600 text-white rounded-xl text-sm font-semibold hover:bg-indigo-700 disabled:opacity-50 transition-colors">
-              {payLoading ? 'Processing…' : '✓ Pay Now'}
+              {payLoading ? 'Processing…' : 'Payment Success'}
             </button>
           </div>
         </div>

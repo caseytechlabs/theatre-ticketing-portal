@@ -4,9 +4,10 @@ import { LoadingSpinner } from '../../components/common/LoadingSpinner'
 import { Modal } from '../../components/common/Modal'
 import { CreateUserRequest, User, UserRole } from '../../types'
 
+type Sort = { col: string; dir: 'asc' | 'desc' }
+
 const roleColors: Record<UserRole, string> = {
   ADMIN:  'bg-red-100 text-red-700 border-red-200',
-  STAFF:  'bg-emerald-100 text-emerald-700 border-emerald-200',
   CLIENT: 'bg-indigo-100 text-indigo-700 border-indigo-200',
 }
 
@@ -15,9 +16,15 @@ function fmt(d?: string) {
   return new Date(d).toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' })
 }
 
+function getValue(col: string, u: User): string | number {
+  if (col === 'createdAt') return new Date(u.createdAt ?? 0).getTime()
+  return (u as any)[col] ?? ''
+}
+
 export function AdminUsersPage() {
   const [users, setUsers]           = useState<User[]>([])
   const [loading, setLoading]       = useState(true)
+  const [sort, setSort]             = useState<Sort>({ col: 'createdAt', dir: 'desc' })
   const [showCreate, setShowCreate] = useState(false)
   const [form, setForm]             = useState<CreateUserRequest>({ username: '', email: '', password: '', role: 'CLIENT' })
   const [creating, setCreating]     = useState(false)
@@ -38,6 +45,18 @@ export function AdminUsersPage() {
   }, [])
 
   useEffect(() => { load() }, [load])
+
+  const onSort = (col: string) =>
+    setSort(prev => prev.col === col ? { col, dir: prev.dir === 'asc' ? 'desc' : 'asc' } : { col, dir: 'asc' })
+
+  const Th = ({ label, col }: { label: string; col: string }) => (
+    <th className="px-4 py-3 font-semibold cursor-pointer select-none hover:bg-gray-100 whitespace-nowrap"
+      onClick={() => onSort(col)}>
+      {label} <span className={sort.col === col ? 'text-gray-700' : 'text-gray-300'}>
+        {sort.col === col ? (sort.dir === 'asc' ? '↑' : '↓') : '↕'}
+      </span>
+    </th>
+  )
 
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -62,6 +81,11 @@ export function AdminUsersPage() {
     } catch (e: any) { notify(e.message, false) }
   }
 
+  const displayed = [...users].sort((a, b) => {
+    const av = getValue(sort.col, a); const bv = getValue(sort.col, b)
+    return (av < bv ? -1 : av > bv ? 1 : 0) * (sort.dir === 'asc' ? 1 : -1)
+  })
+
   return (
     <div>
       <div className="flex justify-between items-center mb-6">
@@ -69,10 +93,16 @@ export function AdminUsersPage() {
           <h1 className="text-2xl font-bold text-gray-900">User Management</h1>
           <p className="text-gray-500 mt-1">{users.length} users registered</p>
         </div>
-        <button onClick={() => setShowCreate(true)}
-          className="bg-slate-700 text-white px-5 py-2.5 rounded-xl text-sm font-semibold hover:bg-slate-800 transition-colors shadow-sm">
-          + Add User
-        </button>
+        <div className="flex gap-2">
+          <button onClick={load} disabled={loading}
+            className="text-sm text-slate-600 border border-slate-200 px-3 py-2 rounded-xl hover:bg-slate-50 disabled:opacity-50 transition-colors">
+            Refresh
+          </button>
+          <button onClick={() => setShowCreate(true)}
+            className="bg-slate-700 text-white px-5 py-2 rounded-xl text-sm font-semibold hover:bg-slate-800 transition-colors shadow-sm">
+            {'+ Add User'}
+          </button>
+        </div>
       </div>
 
       {toast.msg && (
@@ -86,19 +116,19 @@ export function AdminUsersPage() {
           <p className="text-4xl mb-2">👤</p><p>No users found.</p>
         </div>
       ) : (
-        <div className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
-          <table className="w-full text-left">
+        <div className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-x-auto">
+          <table className="w-full text-left min-w-[500px]">
             <thead>
               <tr className="bg-gray-50 border-b border-gray-100 text-xs text-gray-500 uppercase tracking-wide">
-                <th className="px-4 py-3 font-semibold">Username</th>
-                <th className="px-4 py-3 font-semibold">Email</th>
-                <th className="px-4 py-3 font-semibold">Role</th>
-                <th className="px-4 py-3 font-semibold">Created</th>
+                <Th label="Username" col="username" />
+                <Th label="Email" col="email" />
+                <Th label="Role" col="role" />
+                <Th label="Created" col="createdAt" />
                 <th className="px-4 py-3 font-semibold">Action</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-50">
-              {users.map((u) => (
+              {displayed.map((u) => (
                 <tr key={u.id} className="hover:bg-gray-50">
                   <td className="px-4 py-3 font-medium text-gray-800">{u.username}</td>
                   <td className="px-4 py-3 text-sm text-gray-500">{u.email}</td>
@@ -107,7 +137,7 @@ export function AdminUsersPage() {
                       {u.role}
                     </span>
                   </td>
-                  <td className="px-4 py-3 text-sm text-gray-500">{fmt(u.createdAt)}</td>
+                  <td className="px-4 py-3 text-sm text-gray-500 whitespace-nowrap">{fmt(u.createdAt)}</td>
                   <td className="px-4 py-3">
                     <button onClick={() => handleDelete(u.id, u.username)}
                       className="text-xs text-red-500 hover:text-red-700 border border-red-200 hover:border-red-400 px-2.5 py-1 rounded-lg bg-white hover:bg-red-50 transition-colors">
@@ -124,7 +154,6 @@ export function AdminUsersPage() {
       <Modal isOpen={showCreate} onClose={() => { setShowCreate(false); setCreateError('') }} title="Add User">
         <form onSubmit={handleCreate} className="space-y-4">
           {createError && <p className="text-sm text-red-600 bg-red-50 border border-red-200 p-3 rounded-lg">{createError}</p>}
-
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">Username</label>
@@ -136,24 +165,20 @@ export function AdminUsersPage() {
               <select value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value as UserRole })}
                 className="w-full border border-gray-300 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-slate-500 focus:border-transparent bg-white">
                 <option value="CLIENT">CLIENT</option>
-                <option value="STAFF">STAFF</option>
                 <option value="ADMIN">ADMIN</option>
               </select>
             </div>
           </div>
-
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">Email</label>
             <input type="email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} required
               className="w-full border border-gray-300 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-slate-500 focus:border-transparent" />
           </div>
-
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">Password</label>
             <input type="password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} required
               className="w-full border border-gray-300 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-slate-500 focus:border-transparent" />
           </div>
-
           <div className="flex gap-3 pt-1">
             <button type="button" onClick={() => { setShowCreate(false); setCreateError('') }}
               className="flex-1 py-2.5 border border-gray-300 rounded-xl text-sm font-medium text-gray-700 hover:bg-gray-50">

@@ -1,4 +1,4 @@
-export type UserRole = 'ADMIN' | 'STAFF' | 'CLIENT'
+export type UserRole = 'ADMIN' | 'CLIENT'
 
 export enum VoucherStatus {
   AVAILABLE     = 'AVAILABLE',
@@ -46,6 +46,9 @@ export interface Booking {
   status: BookingStatus
   createdAt: string
   updatedAt: string
+  voucherExpiresAt?: string
+  pendingExpiresAt?: string
+  voucherType?: string
 }
 
 export interface ApiResponse<T> {
@@ -60,7 +63,7 @@ export interface LoginRequest {
 }
 
 export interface CreateVoucherRequest {
-  customerId: string
+  customerId?: string
   expiresAt: string
 }
 

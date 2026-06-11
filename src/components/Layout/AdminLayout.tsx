@@ -18,7 +18,7 @@ export function AdminLayout() {
   return (
     <div className="min-h-screen bg-gray-100">
       <nav className="bg-slate-800 shadow-lg">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+        <div className="max-w-screen-2xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex items-center justify-between h-14">
             <div className="flex items-center gap-3">
               <span className="text-xl select-none">⚙️</span>
@@ -36,7 +36,6 @@ export function AdminLayout() {
               ))}
               <div className="ml-4 flex items-center gap-2 pl-4 border-l border-white/20">
                 <span className="text-xs text-slate-300">{user?.username}</span>
-                <span className="text-xs bg-red-500 text-white px-1.5 py-0.5 rounded-full">ADMIN</span>
                 <button onClick={logout}
                   className="text-xs text-slate-300 hover:text-white border border-white/20 hover:border-white/40 px-2 py-1 rounded-lg transition-colors">
                   Logout
@@ -46,7 +45,7 @@ export function AdminLayout() {
           </div>
         </div>
       </nav>
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+      <main className="max-w-screen-2xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         <Outlet />
       </main>
     </div>

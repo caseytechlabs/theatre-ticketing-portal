@@ -5,14 +5,11 @@ import { AuthProvider, useAuth } from './contexts/AuthContext'
 import { ProtectedRoute } from './components/common/ProtectedRoute'
 
 import { ClientLayout }  from './components/Layout/ClientLayout'
-import { StaffLayout }   from './components/Layout/StaffLayout'
 import { AdminLayout }   from './components/Layout/AdminLayout'
 
 import { LoginPage }            from './pages/LoginPage'
 import { ClientVouchersPage }   from './pages/client/ClientVouchersPage'
 import { ClientBookingPage }    from './pages/client/ClientBookingPage'
-import { StaffVouchersPage }    from './pages/staff/StaffVouchersPage'
-import { StaffBookingsPage }    from './pages/staff/StaffBookingsPage'
 import { AdminVouchersPage }    from './pages/admin/AdminVouchersPage'
 import { AdminBookingsPage }    from './pages/admin/AdminBookingsPage'
 import { AdminUsersPage }       from './pages/admin/AdminUsersPage'
@@ -21,7 +18,6 @@ function RoleRedirect() {
   const { user, isAuthenticated } = useAuth()
   if (!isAuthenticated) return <Navigate to="/login" replace />
   if (user?.role === 'CLIENT') return <Navigate to="/client" replace />
-  if (user?.role === 'STAFF')  return <Navigate to="/staff" replace />
   if (user?.role === 'ADMIN')  return <Navigate to="/admin" replace />
   return <Navigate to="/login" replace />
 }
@@ -37,14 +33,6 @@ function AppRoutes() {
         <Route element={<ClientLayout />}>
           <Route path="/client"         element={<ClientVouchersPage />} />
           <Route path="/client/booking" element={<ClientBookingPage />} />
-        </Route>
-      </Route>
-
-      {/* STAFF — View vouchers + manage bookings */}
-      <Route element={<ProtectedRoute allowedRoles={['STAFF']} />}>
-        <Route element={<StaffLayout />}>
-          <Route path="/staff"          element={<StaffVouchersPage />} />
-          <Route path="/staff/bookings" element={<StaffBookingsPage />} />
         </Route>
       </Route>
 

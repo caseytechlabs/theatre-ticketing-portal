@@ -12,6 +12,7 @@ interface AuthContextType {
 const AuthContext = createContext<AuthContextType | null>(null)
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
+  // Hydrate from localStorage on first render so the session survives a page refresh
   const [user, setUser] = useState<AuthUser | null>(() => {
     try {
       const raw = localStorage.getItem('theater_auth')

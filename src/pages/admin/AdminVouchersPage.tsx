@@ -7,10 +7,25 @@ import { Modal } from '../../components/common/Modal'
 import { CreateVoucherRequest, User, Voucher, VoucherStatus } from '../../types'
 
 type Filter = 'ALL' | VoucherStatus
+type SortDir = 'asc' | 'desc'
+type Sort = { col: string; dir: SortDir }
+
 const filters: Filter[] = ['ALL', VoucherStatus.AVAILABLE, VoucherStatus.PENDING_CLAIM, VoucherStatus.CLAIMED]
 
 function fmt(d: string) {
   return new Date(d).toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' })
+}
+
+function getValue(col: string, v: Voucher): string | number {
+  if (col === 'expiresAt' || col === 'createdAt') return new Date((v as any)[col]).getTime()
+  return ((v as any)[col] ?? '') as string
+}
+
+function applySorted(data: Voucher[], s: Sort): Voucher[] {
+  return [...data].sort((a, b) => {
+    const av = getValue(s.col, a); const bv = getValue(s.col, b)
+    return (av < bv ? -1 : av > bv ? 1 : 0) * (s.dir === 'asc' ? 1 : -1)
+  })
 }
 
 export function AdminVouchersPage() {
@@ -18,10 +33,14 @@ export function AdminVouchersPage() {
   const [clients, setClients]     = useState<User[]>([])
   const [loading, setLoading]     = useState(true)
   const [filter, setFilter]       = useState<Filter>('ALL')
+  const [sort, setSort]           = useState<Sort>({ col: 'expiresAt', dir: 'desc' })
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [showCreate, setShowCreate] = useState(false)
-  const [form, setForm]           = useState({ customerId: '', expiresAt: '' })
+  const [form, setForm]           = useState<CreateVoucherRequest & { quantity: number }>({ expiresAt: '', quantity: 1 })
   const [creating, setCreating]   = useState(false)
   const [createError, setCreateError] = useState('')
+  const [bulkCreating, setBulkCreating] = useState(false)
+  const [deleting, setDeleting]   = useState(false)
   const [toast, setToast]         = useState({ msg: '', ok: true })
 
   const notify = (msg: string, ok = true) => {
@@ -32,7 +51,7 @@ export function AdminVouchersPage() {
   const load = useCallback(() => {
     setLoading(true)
     voucherApi.getAll()
-      .then((r) => setVouchers(r.data ?? []))
+      .then((r) => { setVouchers(r.data ?? []); setSelectedIds(new Set()) })
       .catch((e) => notify(e.message, false))
       .finally(() => setLoading(false))
   }, [])
@@ -41,36 +60,165 @@ export function AdminVouchersPage() {
 
   useEffect(() => {
     if (showCreate) {
-      userApi.getByRole('CLIENT')
-        .then((r) => setClients(r.data ?? []))
-        .catch(console.error)
+      userApi.getByRole('CLIENT').then((r) => setClients(r.data ?? [])).catch(console.error)
     }
   }, [showCreate])
 
-  const handleCreate = async (e: React.FormEvent) => {
-    e.preventDefault()
-    setCreateError('')
-    setCreating(true)
-    try {
-      await voucherApi.create({ customerId: form.customerId, expiresAt: new Date(form.expiresAt).toISOString() })
-      setShowCreate(false)
-      setForm({ customerId: '', expiresAt: '' })
-      load()
-      notify('Voucher created')
-    } catch (e: any) { setCreateError(e.message) }
-    finally { setCreating(false) }
-  }
+  const onSort = (col: string) =>
+    setSort(prev => prev.col === col ? { col, dir: prev.dir === 'asc' ? 'desc' : 'asc' } : { col, dir: 'asc' })
 
-  const handleDelete = async (id: string) => {
+  const toggleSelect = (id: string) =>
+    setSelectedIds((prev) => { const next = new Set(prev); next.has(id) ? next.delete(id) : next.add(id); return next })
+
+  const toggleSelectAll = (ids: string[]) =>
+    setSelectedIds((prev) => {
+      const allSelected = ids.every((id) => prev.has(id))
+      const next = new Set(prev)
+      if (allSelected) ids.forEach((id) => next.delete(id))
+      else ids.forEach((id) => next.add(id))
+      return next
+    })
+
+  const handleDeleteOne = async (id: string) => {
     if (!confirm('Delete this voucher?')) return
     try {
       await voucherApi.delete(id)
       setVouchers((prev) => prev.filter((v) => v.id !== id))
+      setSelectedIds((prev) => { const next = new Set(prev); next.delete(id); return next })
       notify('Voucher deleted')
     } catch (e: any) { notify(e.message, false) }
   }
 
-  const displayed = filter === 'ALL' ? vouchers : vouchers.filter((v) => v.status === filter)
+  const handleDeleteSelected = async () => {
+    if (!confirm(`Delete ${selectedIds.size} voucher${selectedIds.size !== 1 ? 's' : ''}?`)) return
+    setDeleting(true)
+    try {
+      const results = await Promise.allSettled([...selectedIds].map((id) => voucherApi.delete(id)))
+      const succeeded = results.filter((r) => r.status === 'fulfilled').length
+      const failed = results.length - succeeded
+      load()
+      notify(failed === 0 ? `Deleted ${succeeded} voucher${succeeded !== 1 ? 's' : ''}` : `${succeeded} deleted, ${failed} failed`, failed === 0)
+    } catch (e: any) { notify(e.message, false) }
+    finally { setDeleting(false) }
+  }
+
+  const handleCreate = async (e: React.FormEvent) => {
+    e.preventDefault()
+    setCreateError('')
+    if (new Date(form.expiresAt) <= new Date()) {
+      setCreateError('Expiry date must be in the future.')
+      return
+    }
+    setCreating(true)
+    try {
+      const qty = Math.max(1, form.quantity)
+      const expiresAt = new Date(form.expiresAt).toISOString()
+      const results = await Promise.allSettled(
+        Array.from({ length: qty }, () => voucherApi.create({ expiresAt }))
+      )
+      const succeeded = results.filter((r) => r.status === 'fulfilled').length
+      const failed = results.length - succeeded
+      setShowCreate(false)
+      setForm({ expiresAt: '', quantity: 1 })
+      load()
+      notify(failed === 0
+        ? `Created ${succeeded} universal voucher${succeeded !== 1 ? 's' : ''}`
+        : `${succeeded} created, ${failed} failed`, failed === 0)
+    } catch (e: any) { setCreateError(e.message) }
+    finally { setCreating(false) }
+  }
+
+  const handleBulkCreate = async () => {
+    if (!confirm('Assign one 24-hour voucher to every client user?')) return
+    setBulkCreating(true)
+    try {
+      const usersResult = await userApi.getByRole('CLIENT')
+      const allClients: User[] = usersResult.data ?? []
+      if (allClients.length === 0) { notify('No client users found.', false); return }
+      const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString()
+      const results = await Promise.allSettled(
+        allClients.map((c) => voucherApi.create({ customerId: c.username, expiresAt }))
+      )
+      const succeeded = results.filter((r) => r.status === 'fulfilled').length
+      const failed = results.length - succeeded
+      load()
+      notify(failed === 0
+        ? `Created ${succeeded} voucher${succeeded !== 1 ? 's' : ''} (24h)`
+        : `${succeeded} created, ${failed} failed`, failed === 0)
+    } catch (e: any) { notify(e.message, false) }
+    finally { setBulkCreating(false) }
+  }
+
+  const isUniversal = (v: Voucher) => !v.customerId || v.customerId.trim() === ''
+  const filtered = filter === 'ALL' ? vouchers : vouchers.filter((v) => v.status === filter)
+  const userVouchers      = applySorted(filtered.filter((v) => !isUniversal(v)), sort)
+  const universalVouchers = applySorted(filtered.filter(isUniversal), sort)
+
+  const Th = ({ label, col }: { label: string; col: string }) => (
+    <th className="px-4 py-3 font-semibold cursor-pointer select-none hover:bg-gray-100 whitespace-nowrap"
+      onClick={() => onSort(col)}>
+      {label} <span className={sort.col === col ? 'text-gray-700' : 'text-gray-300'}>
+        {sort.col === col ? (sort.dir === 'asc' ? '↑' : '↓') : '↕'}
+      </span>
+    </th>
+  )
+
+  const VoucherTable = ({ rows, showCustomer }: { rows: Voucher[]; showCustomer: boolean }) => {
+    const rowIds = rows.map((v) => v.id)
+    const allChecked = rowIds.length > 0 && rowIds.every((id) => selectedIds.has(id))
+    const someChecked = rowIds.some((id) => selectedIds.has(id))
+    return (
+      <div className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-x-auto">
+        <table className="w-full text-left min-w-[600px]">
+          <thead>
+            <tr className="bg-gray-50 border-b border-gray-100 text-xs text-gray-500 uppercase tracking-wide">
+              <th className="px-3 py-3 w-8">
+                <input type="checkbox" checked={allChecked}
+                  ref={(el) => { if (el) el.indeterminate = someChecked && !allChecked }}
+                  onChange={() => toggleSelectAll(rowIds)}
+                  className="rounded border-gray-300 text-slate-700 focus:ring-slate-500 cursor-pointer" />
+              </th>
+              <Th label="Voucher ID" col="id" />
+              <Th label="Status" col="status" />
+              {showCustomer && <Th label="Customer" col="customerId" />}
+              <Th label="Expires" col="expiresAt" />
+              <Th label="Reserved By" col="pendingUserId" />
+              <th className="px-4 py-3 font-semibold">Action</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-gray-50">
+            {rows.map((v) => {
+              const expired = v.status !== VoucherStatus.CLAIMED && new Date(v.expiresAt) < new Date()
+              return (
+                <tr key={v.id} className={`hover:bg-gray-50 ${selectedIds.has(v.id) ? 'bg-slate-50' : ''}`}>
+                  <td className="px-3 py-3">
+                    <input type="checkbox" checked={selectedIds.has(v.id)} onChange={() => toggleSelect(v.id)}
+                      className="rounded border-gray-300 text-slate-700 focus:ring-slate-500 cursor-pointer" />
+                  </td>
+                  <td className="px-4 py-3 text-xs font-mono text-gray-500 break-all max-w-[220px]">{v.id}</td>
+                  <td className="px-4 py-3">
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      <StatusBadge status={v.status} />
+                      {expired && <span className="text-xs text-red-500 border border-red-200 bg-red-50 px-1.5 py-0.5 rounded-full">expired</span>}
+                    </div>
+                  </td>
+                  {showCustomer && <td className="px-4 py-3 text-sm text-gray-700">{v.customerId}</td>}
+                  <td className={`px-4 py-3 text-sm whitespace-nowrap ${expired ? 'text-red-500 font-medium' : 'text-gray-500'}`}>{fmt(v.expiresAt)}</td>
+                  <td className="px-4 py-3 text-sm text-gray-500">{v.pendingUserId ?? '—'}</td>
+                  <td className="px-4 py-3">
+                    <button onClick={() => handleDeleteOne(v.id)}
+                      className="text-xs text-red-500 hover:text-red-700 border border-red-200 hover:border-red-400 px-2.5 py-1 rounded-lg bg-white hover:bg-red-50 transition-colors">
+                      Delete
+                    </button>
+                  </td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
+    )
+  }
 
   return (
     <div>
@@ -79,10 +227,26 @@ export function AdminVouchersPage() {
           <h1 className="text-2xl font-bold text-gray-900">Voucher Management</h1>
           <p className="text-gray-500 mt-1">{vouchers.length} vouchers in system</p>
         </div>
-        <button onClick={() => setShowCreate(true)}
-          className="bg-slate-700 text-white px-5 py-2.5 rounded-xl text-sm font-semibold hover:bg-slate-800 transition-colors shadow-sm">
-          + Create Voucher
-        </button>
+        <div className="flex gap-2 items-center">
+          {selectedIds.size > 0 && (
+            <button onClick={handleDeleteSelected} disabled={deleting}
+              className="text-sm bg-red-600 text-white px-3 py-2 rounded-xl hover:bg-red-700 disabled:opacity-50 transition-colors shadow-sm">
+              {deleting ? 'Deleting…' : `Delete Selected (${selectedIds.size})`}
+            </button>
+          )}
+          <button onClick={load} disabled={loading}
+            className="text-sm text-indigo-600 border border-indigo-200 px-3 py-2 rounded-xl hover:bg-indigo-50 disabled:opacity-50 transition-colors">
+            Refresh
+          </button>
+          <button onClick={handleBulkCreate} disabled={bulkCreating}
+            className="bg-indigo-600 text-white px-4 py-2 rounded-xl text-sm font-semibold hover:bg-indigo-700 disabled:opacity-50 transition-colors shadow-sm">
+            {bulkCreating ? 'Creating…' : 'Assign Voucher to Each Client'}
+          </button>
+          <button onClick={() => setShowCreate(true)}
+            className="bg-slate-700 text-white px-4 py-2 rounded-xl text-sm font-semibold hover:bg-slate-800 transition-colors shadow-sm">
+            Create Universal Voucher
+          </button>
+        </div>
       </div>
 
       {toast.msg && (
@@ -105,69 +269,53 @@ export function AdminVouchersPage() {
         })}
       </div>
 
-      {loading ? <LoadingSpinner /> : displayed.length === 0 ? (
-        <div className="text-center py-16 bg-white rounded-2xl border border-gray-100 text-gray-400">
-          <p className="text-4xl mb-2">🎟️</p><p>No vouchers for this filter.</p>
-        </div>
-      ) : (
-        <div className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
-          <table className="w-full text-left">
-            <thead>
-              <tr className="bg-gray-50 border-b border-gray-100 text-xs text-gray-500 uppercase tracking-wide">
-                <th className="px-4 py-3 font-semibold">Voucher ID</th>
-                <th className="px-4 py-3 font-semibold">Status</th>
-                <th className="px-4 py-3 font-semibold">Customer</th>
-                <th className="px-4 py-3 font-semibold">Expires</th>
-                <th className="px-4 py-3 font-semibold">Reserved by</th>
-                <th className="px-4 py-3 font-semibold">Action</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-50">
-              {displayed.map((v) => {
-                const expired = new Date(v.expiresAt) < new Date()
-                return (
-                  <tr key={v.id} className="hover:bg-gray-50">
-                    <td className="px-4 py-3 text-xs font-mono text-gray-500 max-w-[160px] truncate">{v.id}</td>
-                    <td className="px-4 py-3">
-                      <div className="flex items-center gap-1.5">
-                        <StatusBadge status={v.status} />
-                        {expired && <span className="text-xs text-red-500 border border-red-200 bg-red-50 px-1.5 py-0.5 rounded-full">expired</span>}
-                      </div>
-                    </td>
-                    <td className="px-4 py-3 text-sm text-gray-700">{v.customerId}</td>
-                    <td className={`px-4 py-3 text-sm ${expired ? 'text-red-500 font-medium' : 'text-gray-500'}`}>{fmt(v.expiresAt)}</td>
-                    <td className="px-4 py-3 text-sm text-gray-500">{v.pendingUserId ?? '—'}</td>
-                    <td className="px-4 py-3">
-                      <button onClick={() => handleDelete(v.id)}
-                        className="text-xs text-red-500 hover:text-red-700 border border-red-200 hover:border-red-400 px-2.5 py-1 rounded-lg bg-white hover:bg-red-50 transition-colors">
-                        Delete
-                      </button>
-                    </td>
-                  </tr>
-                )
-              })}
-            </tbody>
-          </table>
+      {loading ? <LoadingSpinner /> : (
+        <div className="space-y-8">
+          <div>
+            <h2 className="text-xs font-bold text-gray-500 uppercase tracking-widest mb-3">
+              User Vouchers ({userVouchers.length})
+            </h2>
+            {userVouchers.length === 0 ? (
+              <div className="text-center py-10 bg-white rounded-2xl border border-gray-100 text-gray-400 text-sm">
+                No user vouchers for this filter.
+              </div>
+            ) : (
+              <VoucherTable rows={userVouchers} showCustomer={true} />
+            )}
+          </div>
+
+          <div>
+            <h2 className="text-xs font-bold text-indigo-500 uppercase tracking-widest mb-3">
+              Universal Vouchers ({universalVouchers.length})
+            </h2>
+            {universalVouchers.length === 0 ? (
+              <div className="text-center py-10 bg-white rounded-2xl border border-gray-100 text-gray-400 text-sm">
+                No universal vouchers for this filter.
+              </div>
+            ) : (
+              <VoucherTable rows={universalVouchers} showCustomer={false} />
+            )}
+          </div>
         </div>
       )}
 
-      <Modal isOpen={showCreate} onClose={() => { setShowCreate(false); setCreateError('') }} title="Create Voucher">
+      <Modal isOpen={showCreate} onClose={() => { setShowCreate(false); setCreateError('') }} title="Create Universal Voucher">
         <form onSubmit={handleCreate} className="space-y-4">
           {createError && <p className="text-sm text-red-600 bg-red-50 border border-red-200 p-3 rounded-lg">{createError}</p>}
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Assign to Customer</label>
-            <select value={form.customerId} onChange={(e) => setForm({ ...form, customerId: e.target.value })} required
-              className="w-full border border-gray-300 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-slate-500 focus:border-transparent bg-white">
-              <option value="">Select a client user…</option>
-              {clients.map((c) => (
-                <option key={c.id} value={c.username}>{c.username} ({c.email})</option>
-              ))}
-            </select>
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Expiry Date & Time</label>
-            <input type="datetime-local" value={form.expiresAt} onChange={(e) => setForm({ ...form, expiresAt: e.target.value })} required
-              className="w-full border border-gray-300 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-slate-500 focus:border-transparent" />
+          <p className="text-sm text-gray-500">Creates universal voucher(s) — any client can claim them.</p>
+          <div className="grid grid-cols-3 gap-3">
+            <div className="col-span-2">
+              <label className="block text-sm font-medium text-gray-700 mb-1">Expiry Date &amp; Time</label>
+              <input type="datetime-local" value={form.expiresAt} onChange={(e) => setForm({ ...form, expiresAt: e.target.value })} required
+                min={(() => { const n = new Date(); return new Date(n.getTime() - n.getTimezoneOffset() * 60000).toISOString().slice(0, 16) })()}
+                className="w-full border border-gray-300 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-slate-500 focus:border-transparent" />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Quantity</label>
+              <input type="number" min={1} max={100} value={form.quantity}
+                onChange={(e) => setForm({ ...form, quantity: Math.max(1, parseInt(e.target.value) || 1) })}
+                className="w-full border border-gray-300 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-slate-500 focus:border-transparent" />
+            </div>
           </div>
           <div className="flex gap-3 pt-1">
             <button type="button" onClick={() => { setShowCreate(false); setCreateError('') }}

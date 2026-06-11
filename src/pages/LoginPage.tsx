@@ -13,7 +13,6 @@ export function LoginPage() {
   // Already logged in — redirect to role home
   if (isAuthenticated && user) {
     if (user.role === 'CLIENT') return <Navigate to="/client" replace />
-    if (user.role === 'STAFF')  return <Navigate to="/staff" replace />
     if (user.role === 'ADMIN')  return <Navigate to="/admin" replace />
   }
 
@@ -28,7 +27,6 @@ export function LoginPage() {
       if (raw) {
         const { role } = JSON.parse(raw)
         if (role === 'CLIENT') navigate('/client', { replace: true })
-        else if (role === 'STAFF') navigate('/staff', { replace: true })
         else navigate('/admin', { replace: true })
       }
     } catch (err: any) {
@@ -98,8 +96,6 @@ export function LoginPage() {
           <div className="grid grid-cols-2 gap-x-4 gap-y-1">
             <p><span className="font-medium text-gray-700">admin</span> / admin123</p>
             <p className="text-indigo-600 text-xs">Full access</p>
-            <p><span className="font-medium text-gray-700">staff</span> / staff123</p>
-            <p className="text-teal-600 text-xs">Vouchers + Bookings</p>
             <p><span className="font-medium text-gray-700">client1</span> / client123</p>
             <p className="text-purple-600 text-xs">Book tickets</p>
             <p><span className="font-medium text-gray-700">client2</span> / client123</p>

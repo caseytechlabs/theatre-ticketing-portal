@@ -2,7 +2,7 @@ import client from './client'
 import { ApiResponse, CreateVoucherRequest, Voucher } from '../types'
 
 export const voucherApi = {
-  // Staff + Admin: all vouchers
+  // Admin: all vouchers
   getAll: () =>
     client.get<ApiResponse<Voucher[]>>('/vouchers').then((r) => r.data),
 
